@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MCP Toolkit for Google Workspace Integration using FastMCP
+MCP Toolkit for Google Workspace Integration
 Receives authentication tokens via environment variables from the Node.js server
 """
 
@@ -22,11 +22,11 @@ from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 import io
 
-# FastMCP imports
+# MCP imports
 try:
     from mcp import FastMCP
 except ImportError:
-    print("FastMCP library not found. Please install with: pip install mcp", file=sys.stderr)
+    print("MCP library not found. Please install with: pip install mcp", file=sys.stderr)
     sys.exit(1)
 
 # Configure logging
@@ -39,84 +39,68 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize FastMCP
-mcp = FastMCP("Google Workspace MCP Server")
+# Initialize MCP
+mcp = FastMCP()
 
-class GoogleWorkspaceClient:
-    """Google Workspace API client with token management"""
+# Global variables for credentials
+credentials = None
+user_id = None
+
+def initialize_credentials():
+    """Initialize Google credentials from environment variables (from database)"""
+    global credentials, user_id
     
-    def __init__(self):
-        self.credentials = None
-        self.user_id = None
-        self._services = {}
-        self._initialize_credentials()
-    
-    def _initialize_credentials(self):
-        """Initialize Google credentials from environment variables"""
-        try:
-            # Get user ID and token data from environment
-            self.user_id = os.getenv('USER_ID')
-            access_token = os.getenv('GOOGLE_ACCESS_TOKEN')
-            refresh_token = os.getenv('GOOGLE_REFRESH_TOKEN')
-            id_token = os.getenv('GOOGLE_ID_TOKEN')
-            expires_at = os.getenv('GOOGLE_TOKEN_EXPIRES_AT')
-            client_id = os.getenv('GOOGLE_CLIENT_ID')
-            client_secret = os.getenv('GOOGLE_CLIENT_SECRET')
-            
-            if not all([self.user_id, access_token, refresh_token, client_id, client_secret]):
-                raise ValueError("Missing required authentication environment variables")
-            
-            # Parse expiry time
-            expiry = None
-            if expires_at:
-                try:
-                    expiry = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
-                except ValueError:
-                    logger.warning(f"Invalid expiry format: {expires_at}")
-            
-            # Create credentials object
-            self.credentials = Credentials(
-                token=access_token,
-                refresh_token=refresh_token,
-                id_token=id_token,
-                token_uri='https://oauth2.googleapis.com/token',
-                client_id=client_id,
-                client_secret=client_secret,
-                expiry=expiry
-            )
-            
-            # Refresh if needed
-            if self.credentials.expired:
-                logger.info("Refreshing expired credentials...")
-                self.credentials.refresh(Request())
-                logger.info("Credentials refreshed successfully")
-            
-            logger.info(f"Initialized credentials for user {self.user_id}")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize credentials: {e}")
-            raise
-    
-    def get_service(self, service_name: str, version: str):
-        """Get or create a Google API service"""
-        service_key = f"{service_name}_{version}"
+    try:
+        # Get user ID and token data from environment (passed from Node.js server)
+        user_id = os.getenv('USER_ID')
+        access_token = os.getenv('GOOGLE_ACCESS_TOKEN')
+        refresh_token = os.getenv('GOOGLE_REFRESH_TOKEN')
+        id_token = os.getenv('GOOGLE_ID_TOKEN')
+        expires_at = os.getenv('GOOGLE_TOKEN_EXPIRES_AT')
+        client_id = os.getenv('GOOGLE_CLIENT_ID')
+        client_secret = os.getenv('GOOGLE_CLIENT_SECRET')
         
-        if service_key not in self._services:
+        if not all([user_id, access_token, refresh_token, client_id, client_secret]):
+            raise ValueError("Missing required authentication environment variables")
+        
+        # Parse expiry time
+        expiry = None
+        if expires_at:
             try:
-                self._services[service_key] = build(
-                    service_name, 
-                    version, 
-                    credentials=self.credentials
-                )
-                logger.info(f"Created {service_name} {version} service")
-            except Exception as e:
-                logger.error(f"Failed to create {service_name} service: {e}")
-                raise
+                expiry = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+            except ValueError:
+                logger.warning(f"Invalid expiry format: {expires_at}")
         
-        return self._services[service_key]
+        # Create credentials object
+        credentials = Credentials(
+            token=access_token,
+            refresh_token=refresh_token,
+            id_token=id_token,
+            token_uri='https://oauth2.googleapis.com/token',
+            client_id=client_id,
+            client_secret=client_secret,
+            expiry=expiry
+        )
+        
+        # Refresh if needed
+        if credentials.expired:
+            logger.info("Refreshing expired credentials...")
+            credentials.refresh(Request())
+            logger.info("Credentials refreshed successfully")
+        
+        logger.info(f"Initialized credentials for user {user_id}")
+        
+    except Exception as e:
+        logger.error(f"Failed to initialize credentials: {e}")
+        raise
 
-# Global client instance
-workspace_client = GoogleWorkspaceClient()
+def get_service(service_name: str, version: str):
+    """Get a Google API service"""
+    try:
+        return build(service_name, version, credentials=credentials)
+    except Exception as e:
+        logger.error(f"Failed to create {service_name} service: {e}")
+        raise
 
 def create_email_message(to: str, subject: str, body: str, cc: str = None, bcc: str = None) -> str:
     """Create a base64 encoded email message"""
@@ -138,7 +122,7 @@ def drive_search(query: str, limit: int = 10) -> Dict[str, Any]:
     try:
         logger.info(f"Searching Drive for: {query}")
         
-        service = workspace_client.get_service('drive', 'v3')
+        service = get_service('drive', 'v3')
         
         # Build search query
         search_query = f"name contains '{query}' or fullText contains '{query}'"
@@ -172,7 +156,7 @@ def drive_read_file(file_id: str) -> Dict[str, Any]:
     try:
         logger.info(f"Reading Drive file: {file_id}")
         
-        service = workspace_client.get_service('drive', 'v3')
+        service = get_service('drive', 'v3')
         
         # Get file metadata
         file_metadata = service.files().get(fileId=file_id).execute()
@@ -224,7 +208,7 @@ def drive_create_file(name: str, content: str, mime_type: str = "text/plain") ->
     try:
         logger.info(f"Creating Drive file: {name}")
         
-        service = workspace_client.get_service('drive', 'v3')
+        service = get_service('drive', 'v3')
         
         # Create file metadata
         file_metadata = {
@@ -267,7 +251,7 @@ def drive_share_file(file_id: str, email: str, role: str = "reader") -> Dict[str
     try:
         logger.info(f"Sharing Drive file {file_id} with {email}")
         
-        service = workspace_client.get_service('drive', 'v3')
+        service = get_service('drive', 'v3')
         
         # Create permission
         permission = {
@@ -304,7 +288,7 @@ def gmail_send_email(to: str, subject: str, body: str, cc: str = None, bcc: str 
     try:
         logger.info(f"Sending email to: {to}")
         
-        service = workspace_client.get_service('gmail', 'v1')
+        service = get_service('gmail', 'v1')
         
         # Create message
         message = {
@@ -335,7 +319,7 @@ def gmail_search_emails(query: str, limit: int = 10) -> Dict[str, Any]:
     try:
         logger.info(f"Searching Gmail for: {query}")
         
-        service = workspace_client.get_service('gmail', 'v1')
+        service = get_service('gmail', 'v1')
         
         # Search for messages
         results = service.users().messages().list(
@@ -388,7 +372,7 @@ def gmail_read_email(message_id: str) -> Dict[str, Any]:
     try:
         logger.info(f"Reading email: {message_id}")
         
-        service = workspace_client.get_service('gmail', 'v1')
+        service = get_service('gmail', 'v1')
         
         # Get full message
         message = service.users().messages().get(
@@ -440,7 +424,7 @@ def calendar_list_events(days_ahead: int = 7) -> Dict[str, Any]:
     try:
         logger.info(f"Listing calendar events for next {days_ahead} days")
         
-        service = workspace_client.get_service('calendar', 'v3')
+        service = get_service('calendar', 'v3')
         
         # Calculate time range
         now = datetime.utcnow()
@@ -496,7 +480,7 @@ def calendar_create_event(title: str, start_time: str, end_time: str, descriptio
     try:
         logger.info(f"Creating calendar event: {title}")
         
-        service = workspace_client.get_service('calendar', 'v3')
+        service = get_service('calendar', 'v3')
         
         # Create event object
         event = {
@@ -545,7 +529,7 @@ def calendar_check_availability(start_time: str, end_time: str, attendees: List[
     try:
         logger.info(f"Checking availability from {start_time} to {end_time}")
         
-        service = workspace_client.get_service('calendar', 'v3')
+        service = get_service('calendar', 'v3')
         
         # Prepare request
         calendars = ['primary']
@@ -589,7 +573,10 @@ def calendar_check_availability(start_time: str, end_time: str, attendees: List[
 if __name__ == "__main__":
     try:
         logger.info("Starting Google Workspace MCP Server...")
-        logger.info(f"User ID: {workspace_client.user_id}")
+        
+        # Initialize credentials from environment variables (from database)
+        initialize_credentials()
+        logger.info(f"User ID: {user_id}")
         
         # Run the MCP server
         mcp.run()
